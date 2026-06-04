@@ -25,7 +25,7 @@ use rustc_session::utils::{CanonicalizedPath, NativeLib};
 use rustc_session::{CompilerIO, EarlyDiagCtxt, Session, build_session, getopts};
 use rustc_span::edition::{DEFAULT_EDITION, Edition};
 use rustc_span::source_map::{RealFileLoader, SourceMapInputs};
-use rustc_span::{FileName, SourceFileHashAlgorithm, sym};
+use rustc_span::{FileName, RealFileName, RemapPathScopeComponents, SourceFileHashAlgorithm, sym};
 use rustc_target::spec::{
     CodeModel, FramePointer, LinkerFlavorCli, MergeFunctions, OnBrokenPipe, PanicStrategy,
     RelocModel, RelroLevel, SanitizerSet, SplitDebuginfo, StackProtector, TlsModel,
@@ -172,6 +172,42 @@ fn test_can_print_warnings() {
 
     sess_and_cfg(&["-Adead_code"], |sess, _cfg| {
         assert!(sess.dcx().can_emit_warnings());
+    });
+}
+
+// The `<cwd>` placeholder in `--remap-path-prefix` must be stored verbatim in the tracked
+// `remap_path_prefix` option (so the incremental hash is stable across build directories,
+// see #132132) and expanded to the real cwd only when the mapping is applied.
+#[test]
+fn test_remap_path_prefix_cwd_token() {
+    sess_and_cfg(&["--remap-path-prefix=<cwd>=remapped"], |sess, _cfg| {
+        // Tracked option stores the literal token, not the resolved cwd.
+        assert_eq!(
+            sess.opts.remap_path_prefix,
+            vec![(PathBuf::from("<cwd>"), PathBuf::from("remapped"))],
+        );
+
+        // ... but it is expanded to the real cwd when the mapping is applied.
+        let cwd = std::env::current_dir().unwrap();
+        let remapped = sess
+            .opts
+            .file_path_mapping()
+            .to_real_filename(&RealFileName::empty(), cwd.join("foo.rs"))
+            .path(RemapPathScopeComponents::DEBUGINFO)
+            .to_path_buf();
+        assert_eq!(remapped, PathBuf::from("remapped/foo.rs"));
+    });
+}
+
+// `-Zremap-cwd-prefix` is now sugar for `--remap-path-prefix=<cwd>=VALUE`, so it too stores the
+// token rather than the absolute cwd.
+#[test]
+fn test_remap_cwd_prefix_uses_cwd_token() {
+    sess_and_cfg(&["-Zremap-cwd-prefix=remapped"], |sess, _cfg| {
+        assert_eq!(
+            sess.opts.remap_path_prefix,
+            vec![(PathBuf::from("<cwd>"), PathBuf::from("remapped"))],
+        );
     });
 }
 

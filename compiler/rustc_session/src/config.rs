@@ -1373,11 +1373,30 @@ pub fn host_tuple() -> &'static str {
     (option_env!("CFG_COMPILER_HOST_TRIPLE")).expect("CFG_COMPILER_HOST_TRIPLE")
 }
 
+/// Placeholder that may appear as the leading component of a `--remap-path-prefix`
+/// FROM path and is expanded to the current working directory when the mapping is
+/// *applied*. Because the token -- not the resolved absolute path -- is what is
+/// stored in the tracked `remap_path_prefix` option, the incremental cache is
+/// preserved across build directories. See #132132.
+const CWD_REMAP_TOKEN: &str = "<cwd>";
+
+/// Expands remap placeholders (currently only `<cwd>`) in a FROM path.
+fn expand_remap_from(from: PathBuf) -> PathBuf {
+    if let Ok(rest) = from.strip_prefix(CWD_REMAP_TOKEN) {
+        if let Ok(cwd) = std::env::current_dir() {
+            return cwd.join(rest);
+        }
+    }
+    from
+}
+
 fn file_path_mapping(
     remap_path_prefix: Vec<(PathBuf, PathBuf)>,
     remap_path_scope: RemapPathScopeComponents,
 ) -> FilePathMapping {
-    FilePathMapping::new(remap_path_prefix.clone(), remap_path_scope)
+    let mapping =
+        remap_path_prefix.into_iter().map(|(from, to)| (expand_remap_from(from), to)).collect();
+    FilePathMapping::new(mapping, remap_path_scope)
 }
 
 impl Default for Options {
@@ -2396,13 +2415,13 @@ fn parse_remap_path_prefix(
             Some((from, to)) => (PathBuf::from(from), PathBuf::from(to)),
         })
         .collect();
-    match &unstable_opts.remap_cwd_prefix {
-        Some(to) => match std::env::current_dir() {
-            Ok(cwd) => mapping.push((cwd, to.clone())),
-            Err(_) => (),
-        },
-        None => (),
-    };
+    // `-Zremap-cwd-prefix=VALUE` is sugar for `--remap-path-prefix=<cwd>=VALUE`: it stores the
+    // `<cwd>` token (expanded lazily in `file_path_mapping`) so the absolute cwd never enters the
+    // tracked option, keeping the incremental cache valid across build directories. This makes the
+    // unstable flag redundant with the stable one and a candidate for removal. See #132132.
+    if let Some(to) = &unstable_opts.remap_cwd_prefix {
+        mapping.push((PathBuf::from(CWD_REMAP_TOKEN), to.clone()));
+    }
     mapping
 }
 
